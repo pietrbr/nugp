@@ -19,6 +19,7 @@ import gi
 import os
 from typing import cast
 import sys
+import argparse
 
 data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
 cache_home = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
@@ -71,7 +72,7 @@ def get_prelogin_url() -> PreloginURL:
     try:
         xml_tree = ET.fromstring(xml_string)
     except Exception as e:
-        exception_string = f"Failed to parse xml contining prelogin url: {xml_string}"
+        exception_string = f"Failed to parse xml containing prelogin url: {xml_string}"
         raise PreloginXMLException(exception_string) from e
 
     saml_request_element = xml_tree.find("saml-request")
@@ -89,12 +90,52 @@ def get_prelogin_url() -> PreloginURL:
     return auth_uri
 
 
-def popup_login(auth_url: PreloginURL) -> AuthResult | None:
+def popup_login(
+    auth_url: PreloginURL, email: str | None = None, passwd: str | None = None
+) -> AuthResult | None:
     from gi.repository import Gtk, WebKit, GLib, Gio  # type: ignore
 
     result: AuthResult | None = None
 
+    GLib.set_prgname("nugp")
     app = Gtk.Application()
+
+    def autofill(webview: WebKit.WebView, name: str, value: str):
+        cred = GLib.Variant(
+            "a{sv}",
+            {
+                "name": GLib.Variant("s", name),
+                "value": GLib.Variant("s", value),
+            },
+        )
+
+        def on_load_changed(wv, event):
+            if event == WebKit.LoadEvent.FINISHED:
+                wv.call_async_javascript_function(
+                    # This is some code that finds the username and password,
+                    # plays some small tricks, and inserts our own
+                    """
+                    new MutationObserver(() => {
+                        const fieldEL = document.querySelector(`input[name="${name}"]`);
+                        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        
+                        if (fieldEL && !fieldEL.dataset.filled) {
+                            setter.call(fieldEL, value);
+                            fieldEL.dispatchEvent(new Event('input', {bubbles: true}));
+                            fieldEL.dataset.filled = 'true';
+                        }
+                    }).observe(document.body, {childList: true, subtree: true});
+                    """,
+                    length=-1,
+                    arguments=cred,
+                    world_name=None,
+                    source_uri=None,
+                    cancellable=None,
+                    callback=None,
+                    user_data=None,
+                )
+
+        webview.connect("load-changed", on_load_changed)
 
     def on_activate(app):
         data_dir = os.path.join(data_home, "nugp")
@@ -111,7 +152,19 @@ def popup_login(auth_url: PreloginURL) -> AuthResult | None:
         ctx.register_uri_scheme("globalprotectcallback", gpcallback_handler)
         # Create window
         win = Gtk.ApplicationWindow(application=app)
+
+        def close_handler(win):
+            app.quit()
+            return True
+
+        win.connect("close-request", close_handler)
+        win.set_title("nugp")
         webview = WebKit.WebView(network_session=session)
+        if email is not None:
+            autofill(webview, "loginfmt", email)  # email
+        if passwd is not None:
+            autofill(webview, "passwd", passwd)  # password
+
         webview.load_uri(auth_url)
         win.set_child(webview)
         win.present()
@@ -144,7 +197,7 @@ def parse_xml_comment(xml_comment: str) -> PreloginCookie:
     try:
         xml_tree = ET.fromstring(xml_string)
     except Exception as e:
-        exception_string = f"Failed to parse xml contining cookie: {xml_string}"
+        exception_string = f"Failed to parse xml containing cookie: {xml_string}"
         raise PreloginXMLException(exception_string) from e
 
     cookie_element = xml_tree.find("prelogin-cookie")
@@ -161,8 +214,26 @@ def parse_xml_comment(xml_comment: str) -> PreloginCookie:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Grab a GlobalProtect VPN cookie via browser login"
+    )
+    parser.add_argument("--username", "-u", metavar="EMAIL", help="autofills username.")
+    parser.add_argument(
+        "--password",
+        "-p",
+        help="autofills password. - for stdin",
+    )
+    args = parser.parse_args()
+
     prelogin_url = get_prelogin_url()
-    encoded_auth_data = popup_login(prelogin_url)
+
+    email = args.username
+    passwd = args.password
+
+    if passwd == "-" or (passwd is None and not sys.stdin.isatty()):
+        passwd = sys.stdin.read().strip()
+
+    encoded_auth_data = popup_login(prelogin_url, email, passwd)
 
     if encoded_auth_data is None:
         exception_string = "The login window closed without returning any data"
