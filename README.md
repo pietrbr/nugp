@@ -55,7 +55,7 @@ But to avoid just typing it in you can provide it over stdin from a password man
 
 Here is an example for what that might look like for Patrick Star if he uses the pass password store
 ```Bash
-pass show northeastern | nugp -u star.p@northeastern.edu | sudo openconnect --protocol=gp --usergroup=portal:prelogin-cookie --passwd-on-stdin vpn.northeastern.edu -u "star.p" --interface nutun
+sudo -v && pass show northeastern | nugp -u star.p@northeastern.edu | sudo openconnect --protocol=gp --usergroup=portal:prelogin-cookie --passwd-on-stdin vpn.northeastern.edu -u "star.p" --interface nutun
 ```
 If you do not provide the flag `-p` but pipe things into `nugp` then it assumes the input is a password and autofills it anyway
 Otherwise if you do not provide flags then you will have to log in manually

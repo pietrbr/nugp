@@ -59,7 +59,7 @@ def get_prelogin_url() -> PreloginURL:
     ctx.check_hostname = True
     ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.load_default_certs()
-    # ↓ Allow unsafe legacy renegotiation (OpenSSL 3)
+    # Allow unsafe legacy renegotiation (OpenSSL 3)
     if hasattr(ssl, "OP_LEGACY_SERVER_CONNECT"):
         ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
 
@@ -91,7 +91,10 @@ def get_prelogin_url() -> PreloginURL:
 
 
 def popup_login(
-    auth_url: PreloginURL, email: str | None = None, passwd: str | None = None
+    auth_url: PreloginURL,
+    email: str | None = None,
+    passwd: str | None = None,
+    debug: bool = False,
 ) -> AuthResult | None:
     from gi.repository import Gtk, WebKit, GLib, Gio  # type: ignore
 
@@ -115,16 +118,33 @@ def popup_login(
                     # This is some code that finds the username and password,
                     # plays some small tricks, and inserts our own
                     """
-                    new MutationObserver(() => {
-                        const fieldEL = document.querySelector(`input[name="${name}"]`);
+                    (function() {
                         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-        
-                        if (fieldEL && !fieldEL.dataset.filled) {
-                            setter.call(fieldEL, value);
-                            fieldEL.dispatchEvent(new Event('input', {bubbles: true}));
-                            fieldEL.dataset.filled = 'true';
+
+                        function fill(el) {
+                            if (el && !el.dataset.filled) {
+                                setter.call(el, value);
+                                el.dispatchEvent(new Event('input', {bubbles: true}));
+                                el.dataset.filled = 'true';
+            
+                                const btn = document.querySelector(`input[type="submit"]`);
+                                if (btn && !btn.disabled) {
+                                    btn.click();
+                                    return true;
+                                }
+                            }
+                            return false;
                         }
-                    }).observe(document.body, {childList: true, subtree: true});
+
+                        if (fill(document.querySelector(`input[name="${name}"]`))) return;
+
+                        const observer = new MutationObserver(() => {
+                            if (fill(document.querySelector(`input[name="${name}"]`))) {
+                                observer.disconnect();
+                            }
+                        });
+                        observer.observe(document.body, {childList: true, subtree: true});
+                    })();
                     """,
                     length=-1,
                     arguments=cred,
@@ -160,6 +180,10 @@ def popup_login(
         win.connect("close-request", close_handler)
         win.set_title("nugp")
         webview = WebKit.WebView(network_session=session)
+        if debug:
+            settings = webview.get_settings()
+            settings.set_enable_developer_extras(True)
+            webview.get_inspector().show()
         if email is not None:
             autofill(webview, "loginfmt", email)  # email
         if passwd is not None:
@@ -223,6 +247,12 @@ def main() -> None:
         "-p",
         help="autofills password. - for stdin",
     )
+    parser.add_argument(
+        "--debug",
+        "-d",
+        help="shows webview debug info",
+        action="store_true",
+    )
     args = parser.parse_args()
 
     prelogin_url = get_prelogin_url()
@@ -233,7 +263,12 @@ def main() -> None:
     if passwd == "-" or (passwd is None and not sys.stdin.isatty()):
         passwd = sys.stdin.read().strip()
 
-    encoded_auth_data = popup_login(prelogin_url, email, passwd)
+    encoded_auth_data = popup_login(
+        prelogin_url,
+        email=email,
+        passwd=passwd,
+        debug=args.debug,
+    )
 
     if encoded_auth_data is None:
         exception_string = "The login window closed without returning any data"
